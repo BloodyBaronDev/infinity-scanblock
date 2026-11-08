@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore scanblock firewall rules before Docker starts
+After=network-pre.target
+Before=docker.service network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/scanblock-restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

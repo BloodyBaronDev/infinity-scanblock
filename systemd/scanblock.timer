@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily refresh of scanblock lists
+
+[Timer]
+OnBootSec=1min
+OnCalendar=*-*-* 04:30
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
