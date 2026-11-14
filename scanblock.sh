@@ -13,8 +13,10 @@ LOG_LIMIT="30/minute"
 LOG_BURST=50
 ALLOW=()
 EXTRA_SOURCES=()
+OPEN_TCP=""
+OPEN_UDP=""
 
-# Конфиг переопределяет значения выше (ALLOW, MIN_LINES, LOG_LIMIT, LOG_BURST, EXTRA_SOURCES).
+# Конфиг переопределяет значения выше (ALLOW, MIN_LINES, LOG_LIMIT, LOG_BURST, EXTRA_SOURCES, OPEN_TCP, OPEN_UDP).
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
 
@@ -68,10 +70,18 @@ ipset destroy "$SET-new"
 mkdir -p "$STATE_DIR"
 ipset save "$SET" > "$STATE_DIR/rules.tmp" && mv "$STATE_DIR/rules.tmp" "$STATE_DIR/rules"
 
-# Первые правила INPUT: журналируем (с лимитом) и молча отбрасываем только НОВЫЕ входящие соединения.
-DROP_RULE=(-m conntrack --ctstate NEW -m set --match-set "$SET" src -j DROP)
+# Первые правила INPUT: журналируем (с лимитом) и отправляем НОВЫЕ входящие соединения в цепочку SCANBLOCK.
+# В цепочке порты из OPEN_TCP/OPEN_UDP возвращаются в INPUT (дальше решает обычный файрвол), остальное DROP.
+# Зачем: сервер, который на публичном порту отвечает всем, кроме сканеров, выделяется (см. README, «Открытые порты»).
+iptables -N SCANBLOCK 2>/dev/null || iptables -F SCANBLOCK
+[ -n "$OPEN_TCP" ] && iptables -A SCANBLOCK -p tcp -m multiport --dports "$OPEN_TCP" -j RETURN
+[ -n "$OPEN_UDP" ] && iptables -A SCANBLOCK -p udp -m multiport --dports "$OPEN_UDP" -j RETURN
+iptables -A SCANBLOCK -j DROP
+JUMP_RULE=(-m conntrack --ctstate NEW -m set --match-set "$SET" src -j SCANBLOCK)
 LOG_RULE=(-m conntrack --ctstate NEW -m set --match-set "$SET" src -m limit --limit "$LOG_LIMIT" --limit-burst "$LOG_BURST" -j LOG --log-prefix "SCANBLOCK " --log-level 6)
-iptables -C INPUT "${DROP_RULE[@]}" 2>/dev/null || iptables -I INPUT 1 "${DROP_RULE[@]}"
+iptables -C INPUT "${JUMP_RULE[@]}" 2>/dev/null || iptables -I INPUT 1 "${JUMP_RULE[@]}"
 iptables -C INPUT "${LOG_RULE[@]}" 2>/dev/null || iptables -I INPUT 1 "${LOG_RULE[@]}"
+# Прямое DROP-правило старых версий убираем: оно резало бы и открытые порты.
+while iptables -D INPUT -m conntrack --ctstate NEW -m set --match-set "$SET" src -j DROP 2>/dev/null; do :; done
 log "Обновлено: $N подсетей, ALLOW: ${#ALLOW[@]}, доп. источников: $ok ок, $fail пропущено"
 echo "$N $ok/$fail"
